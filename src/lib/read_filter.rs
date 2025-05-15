@@ -1,11 +1,10 @@
 //! A trait and default implementation of a read filter.
-use rust_htslib::bam::pileup::Alignment;
 use rust_htslib::bam::record::Record;
 
 /// Anything that implements ReadFilter can apply a filter set to read.
 pub trait ReadFilter {
     /// filters a read, true is pass, false if fail
-    fn filter_read(&self, read: &Record, alignment: Option<&Alignment>) -> bool;
+    fn filter_read(&self, read: &Record) -> bool;
 }
 
 /// A straightforward read filter.
@@ -29,7 +28,7 @@ impl DefaultReadFilter {
 impl ReadFilter for DefaultReadFilter {
     /// Filter reads based SAM flags and mapping quality
     #[inline(always)]
-    fn filter_read(&self, read: &Record, _alignment: Option<&Alignment>) -> bool {
+    fn filter_read(&self, read: &Record) -> bool {
         let flags = read.flags();
         (!flags) & &self.include_flags == 0
             && flags & &self.exclude_flags == 0

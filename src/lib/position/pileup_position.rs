@@ -72,7 +72,7 @@ impl PileupPosition {
         read_filter: &F,
         base_filter: Option<u8>,
     ) {
-        if !read_filter.filter_read(&record, Some(alignment)) {
+        if !read_filter.filter_read(&record) {
             self.depth -= 1;
             self.fail += 1;
             return;
@@ -201,10 +201,9 @@ impl PileupPosition {
                     Ordering::Less => Ordering::Less,
                     Ordering::Equal => {
                         // Check if a is first in pair
-                        if a.1.flags() & 64 == 0 && read_filter.filter_read(&a.1, Some(&a.0)) {
+                        if a.1.flags() & 64 == 0 && read_filter.filter_read(&a.1) {
                             Ordering::Greater
-                        } else if b.1.flags() & 64 == 0 && read_filter.filter_read(&b.1, Some(&b.0))
-                        {
+                        } else if b.1.flags() & 64 == 0 && read_filter.filter_read(&b.1) {
                             Ordering::Less
                         } else {
                             // Default to `a` in the event that there is no first in pair for some reason
