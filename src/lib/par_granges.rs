@@ -163,6 +163,9 @@ impl<R: RegionProcessor + Send + Sync> ParGranges<R> {
                 }
                 // Get a copy of the header
                 let header = reader.header().to_owned();
+                let header_names: Vec<String> = (0..header.target_count())
+                    .map(|tid| std::str::from_utf8(header.tid2name(tid)).unwrap().to_string())
+                    .collect();
 
                 // Work out if we are restricted to a subset of sites
                 let bed_intervals = if let Some(regions_bed) = &self.regions_bed {
@@ -197,62 +200,144 @@ impl<R: RegionProcessor + Send + Sync> ParGranges<R> {
                         .expect("Parsed BAM/CRAM header to intervals")
                 };
 
-                // The number positions to try to process in one batch
-                let serial_step_size = self
-                    .chunksize
-                    .checked_mul(self.threads as u32)
-                    .unwrap_or(u32::MAX); // aka superchunk
+                // Group small chromosomes together until reaching chunk size
+                let mut current_batch = Vec::new();
+                let mut current_batch_size = 0;
+
                 for (tid, intervals) in intervals.into_iter().enumerate() {
                     let tid: u32 = tid as u32;
                     let tid_end: u32 = header.target_len(tid).unwrap().try_into().unwrap();
-                    info!("Processing TID {}:0-{}", tid, tid_end);
-                    // Result holds the processed positions to be sent to writer
-                    let mut result = vec![];
-                    for chunk_start in (0..tid_end).step_by(serial_step_size as usize) {
-                        let tid_name = std::str::from_utf8(header.tid2name(tid)).unwrap();
-                        let chunk_end =
-                            std::cmp::min(chunk_start as u32 + serial_step_size, tid_end);
-                        trace!(
-                            "Batch Processing {}:{}-{}",
-                            tid_name,
-                            chunk_start,
-                            chunk_end
-                        );
-                        let (r, _) = rayon::join(
-                            || {
-                                // Must be a vec so that par_iter works and results stay in order
-                                let ivs: Vec<Interval<u32, ()>> =
-                                    Lapper::<u32, ()>::find(&intervals, chunk_start, chunk_end)
-                                        // Truncate intervals that extend forward or backward of chunk in question
-                                        .map(|iv| Interval {
-                                            start: std::cmp::max(iv.start, chunk_start),
-                                            stop: std::cmp::min(iv.stop, chunk_end),
-                                            val: (),
-                                        })
-                                        .collect();
-                                ivs.into_par_iter()
-                                    .flat_map(|iv| {
-                                        trace!("Processing {}:{}-{}", tid_name, iv.start, iv.stop);
-                                        self.processor.process_region(tid, iv.start, iv.stop)
-                                    })
-                                    .collect()
-                            },
-                            || {
-                                result.into_iter().for_each(|p| {
-                                    snd.send(p).expect("Sent a serializable to writer")
-                                })
-                            },
-                        );
-                        result = r;
+                    let chr_name = &header_names[tid as usize];
+                    debug!("Checking chromosome: {} (TID: {})", chr_name, tid);
+                    // Skip chromosomes with no reads
+                    if !self.has_reads(&mut reader, tid) {
+                        debug!("Skipping chromosome: {} (TID: {}) as it has no reads", chr_name, tid);
+                        continue;
                     }
-                    // Send final set of results
-                    result
-                        .into_iter()
-                        .for_each(|p| snd.send(p).expect("Sent a serializable to writer"));
+                    if chr_name == "ENSG00000143409" {
+                        info!("DEBUG: Processing ENSG00000143409 (TID: {})", tid);
+                        info!("DEBUG: ENSG00000143409 will be processed in {} chunks", (tid_end + self.chunksize - 1) / self.chunksize);
+                    }
+
+                    // If this is a large chromosome, process it in chunks
+                    if tid_end > self.chunksize {
+                        // Process any pending batch first
+                        if !current_batch.is_empty() {
+                            if chr_name == "ENSG00000143409" {
+                                info!("DEBUG: Processing pending batch before ENSG00000143409");
+                            }
+                            self.process_chromosome_batch(&mut reader, &header_names, &current_batch, &snd);
+                            current_batch.clear();
+                            current_batch_size = 0;
+                        }
+
+                        info!("Processing chromosome {}:0-{} (chunked)", tid, tid_end);
+                        let mut result = vec![];
+                        for chunk_start in (0..tid_end).step_by(self.chunksize as usize) {
+                            let chunk_end = std::cmp::min(chunk_start as u32 + self.chunksize, tid_end);
+                            let tid_name = &header_names[tid as usize];
+                            if chr_name == "ENSG00000143409" {
+                                info!("DEBUG: Processing ENSG00000143409 chunk {}-{}", chunk_start, chunk_end);
+                            }
+                            trace!(
+                                "Batch Processing {}:{}-{}",
+                                tid_name,
+                                chunk_start,
+                                chunk_end
+                            );
+                            
+                            let (r, _) = rayon::join(
+                                || {
+                                    let ivs: Vec<Interval<u32, ()>> =
+                                        Lapper::<u32, ()>::find(&intervals, chunk_start, chunk_end)
+                                            .map(|iv| Interval {
+                                                start: std::cmp::max(iv.start, chunk_start),
+                                                stop: std::cmp::min(iv.stop, chunk_end),
+                                                val: (),
+                                            })
+                                            .collect();
+                                    ivs.into_par_iter()
+                                        .flat_map(|iv| {
+                                            trace!("Processing {}:{}-{}", tid_name, iv.start, iv.stop);
+                                            self.processor.process_region(tid, iv.start, iv.stop)
+                                        })
+                                        .collect()
+                                },
+                                || {
+                                    result.into_iter().for_each(|p| {
+                                        snd.send(p).expect("Sent a serializable to writer")
+                                    })
+                                },
+                            );
+                            result = r;
+                        }
+                        result.into_iter().for_each(|p| snd.send(p).expect("Sent a serializable to writer"));
+                    } else {
+                        // This is a small chromosome, add it to the current batch
+                        current_batch.push((tid, tid_end, intervals.clone()));
+                        current_batch_size += tid_end;
+
+                        // Process the batch if we've reached chunk size or finished all chromosomes
+                        if current_batch_size >= self.chunksize || tid == intervals.len() as u32 - 1 {
+                            self.process_chromosome_batch(&mut reader, &header_names, &current_batch, &snd);
+                            current_batch.clear();
+                            current_batch_size = 0;
+                        }
+                    }
+                }
+
+                // Process any remaining batch after going through all chromosomes
+                if !current_batch.is_empty() {
+                    self.process_chromosome_batch(&mut reader, &header_names, &current_batch, &snd);
                 }
             });
         });
         Ok(rxv)
+    }
+
+    /// Process a batch of small chromosomes together
+    fn process_chromosome_batch(
+        &self,
+        reader: &mut IndexedReader,
+        header_names: &[String],
+        batch: &[(u32, u32, Lapper<u32, ()>)],
+        snd: &crossbeam::channel::Sender<R::P>,
+    ) {
+        if batch.is_empty() {
+            return;
+        }
+
+        let mut result = vec![];
+        let (r, _) = rayon::join(
+            || {
+                batch.into_par_iter()
+                    .flat_map(|(tid, tid_end, intervals)| {
+                        let tid_name = &header_names[*tid as usize];
+                        info!("Processing chromosome {}:0-{}", tid, tid_end);
+                        let ivs: Vec<Interval<u32, ()>> = Lapper::<u32, ()>::find(intervals, 0, *tid_end)
+                            .map(|iv| Interval {
+                                start: iv.start,
+                                stop: iv.stop,
+                                val: (),
+                            })
+                            .collect();
+                        ivs.into_par_iter()
+                            .flat_map(|iv| {
+                                trace!("Processing {}:{}-{}", tid_name, iv.start, iv.stop);
+                                self.processor.process_region(*tid, iv.start, iv.stop)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect()
+            },
+            || {
+                result.into_iter().for_each(|p| {
+                    snd.send(p).expect("Sent a serializable to writer")
+                })
+            },
+        );
+        result = r;
+        result.into_iter().for_each(|p| snd.send(p).expect("Sent a serializable to writer"));
     }
 
     // Convert the header into intervals of equally sized chunks. The last interval may be short.
@@ -379,6 +464,12 @@ impl<R: RegionProcessor + Send + Sync> ParGranges<R> {
                 lapper
             })
             .collect()
+    }
+
+    /// Check if a chromosome has any reads by fetching the entire chromosome
+    fn has_reads(&self, reader: &mut IndexedReader, tid: u32) -> bool {
+        reader.fetch(tid).expect("Failed to fetch chromosome");
+        reader.pileup().next().is_some()
     }
 }
 

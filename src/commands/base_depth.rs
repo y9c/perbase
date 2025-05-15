@@ -282,6 +282,7 @@ impl<F: ReadFilter> RegionProcessor for BaseProcessor<F> {
                         pos.near_max_depth = true;
                     }
                     pos.pos += self.coord_base;
+                    println!("DEBUG PileupPosition: {{ ref_seq: {}, pos: {}, depth: {} }}", pos.ref_seq, pos.pos, pos.depth);
                     Some(pos)
                 } else {
                     None
