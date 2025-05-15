@@ -214,18 +214,11 @@ impl<R: RegionProcessor + Send + Sync> ParGranges<R> {
                         debug!("Skipping chromosome: {} (TID: {}) as it has no reads", chr_name, tid);
                         continue;
                     }
-                    if chr_name == "ENSG00000143409" {
-                        info!("DEBUG: Processing ENSG00000143409 (TID: {})", tid);
-                        info!("DEBUG: ENSG00000143409 will be processed in {} chunks", (tid_end + self.chunksize - 1) / self.chunksize);
-                    }
 
                     // If this is a large chromosome, process it in chunks
                     if tid_end > self.chunksize {
                         // Process any pending batch first
                         if !current_batch.is_empty() {
-                            if chr_name == "ENSG00000143409" {
-                                info!("DEBUG: Processing pending batch before ENSG00000143409");
-                            }
                             self.process_chromosome_batch(&mut reader, &header_names, &current_batch, &snd);
                             current_batch.clear();
                             current_batch_size = 0;
@@ -236,9 +229,6 @@ impl<R: RegionProcessor + Send + Sync> ParGranges<R> {
                         for chunk_start in (0..tid_end).step_by(self.chunksize as usize) {
                             let chunk_end = std::cmp::min(chunk_start as u32 + self.chunksize, tid_end);
                             let tid_name = &header_names[tid as usize];
-                            if chr_name == "ENSG00000143409" {
-                                info!("DEBUG: Processing ENSG00000143409 chunk {}-{}", chunk_start, chunk_end);
-                            }
                             trace!(
                                 "Batch Processing {}:{}-{}",
                                 tid_name,
