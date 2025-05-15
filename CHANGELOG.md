@@ -1,5 +1,6 @@
 # CHANGELOG
 
+
 ## 0.8.3
 
 - Updated dependencies - to fixed version of gzp
@@ -45,3 +46,15 @@
 - Changed log level of "Batch Processing ...", "Processing ...", and "Processing region" logging statements to `trace`. Set `RUST_LOG=trace` environment variable to restore previous logging verbosity.
 - Added "Processing TID ..." log statement at `info` level (on by default).
 - All `perbase` commands now gracefully handle broken pipes and exit 0.
+
+## 0.10.0
+
+- [fix](https://github.com/sstadick/perbase/pull/73) from @biermanr for [71](https://github.com/sstadick/perbase/issues/71) (--keep-zeros skip/dup loci)
+
+## 0.10.1
+
+- [fix](https://github.com/sstadick/perbase/issues/74) from @nkkarpov updates smartstring version wich fixes some UB in old smartstring.
+
+## 0.10.2
+
+- [fix](https://github.com/sstadick/perbase/pull/78) Update htslib version v0.39 by @davidecarlson
